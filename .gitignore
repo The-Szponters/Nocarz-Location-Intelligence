@@ -1,0 +1,21 @@
+# Data (large raw + processed)
+data/*.csv
+data/processed/*.csv
+data/processed/*.parquet
+
+# Models & logs (artifacts)
+models/*.joblib
+logs/*.jsonl
+
+# Python
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+.pytest_cache/
+*.egg-info/
+.venv/
+venv/
+
+# OS / IDE
+.DS_Store
+Thumbs.db
