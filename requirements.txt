@@ -1,4 +1,4 @@
-# Nocarz IUM project — Python 3.13
+# Nocarz IUM project — Python 3.12
 # Core data / ML stack (already present in the environment, pinned for reproducibility)
 pandas>=2.3
 numpy>=2.3
@@ -15,3 +15,4 @@ pydantic>=2.0
 
 # Notebooks
 jupyter>=1.0
+pytest>=7.0

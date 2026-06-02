@@ -21,7 +21,7 @@ tests/           testy (pytest)
 
 ## Wymagania
 
-Python **3.13** (modele serializowane pod 3.13 — patrz Uwagi). Instalacja zależności:
+Python **3.12** (cały stack — venv, Docker, modele — jest na 3.12, patrz Uwagi). Instalacja zależności:
 
 ```powershell
 python -m pip install -r requirements.txt
@@ -38,10 +38,36 @@ python scripts/train_models.py       # baseline + HGB, CV przestrzenna (LODO), z
 python scripts/make_ground_truth.py  # ground_truth.csv (id -> prawdziwy przychód, zbiór testowy)
 ```
 
+## Docker (zalecane przy ewaluacji — cross-platform)
+
+Obraz oparty na **Python 3.12** daje spójne, powtarzalne środowisko (te same wersje
+co lokalny venv, więc brak problemu `PCG64 is not a known BitGenerator`) oraz omija
+wolny fallback IPv6 `localhost` na hoście.
+
+```bash
+docker build -t nocarz .
+# data/ i models/ są w .gitignore — podmontuj je (albo zostaną wbudowane przez COPY, jeśli są obecne):
+docker run --rm -p 8080:8080 \
+  -v "$(pwd)/data:/app/data" \
+  -v "$(pwd)/models:/app/models" \
+  nocarz
+# serwis nasłuchuje na http://127.0.0.1:8080  (GET /health, POST /predict_revenue)
+```
+
+W kontenerze uvicorn słucha na `0.0.0.0:8080`; mapowanie `-p 8080:8080` udostępnia go na hoście.
+
 ## Mikroserwis
+
+PowerShell (Windows):
 
 ```powershell
 .\scripts\run_server.ps1             # uvicorn na http://127.0.0.1:8080
+```
+
+bash (Linux / macOS):
+
+```bash
+PYTHONPATH=src python -m uvicorn nocarz.app:app --host 127.0.0.1 --port 8080 --workers 1
 ```
 
 Przykładowe wywołanie (zgodne z poleceniem). W PowerShell `curl` to alias `Invoke-WebRequest`,
@@ -61,6 +87,14 @@ Invoke-RestMethod -Uri http://127.0.0.1:8080/predict_revenue -Method Post `
   -ContentType "application/json" -Body $body
 ```
 
+bash (Linux / macOS) — `client_id` i `force_model` są opcjonalne, więc wystarczy `features`:
+
+```bash
+curl -X POST -H "Content-Type: application/json" \
+  -d '{"features":{"listing_id":3109,"latitude":48.8319,"longitude":2.3187,"neighbourhood_cleansed":"Observatoire","property_type":"Entire rental unit","room_type":"Entire home/apt","accommodates":2,"amenities_count":15}}' \
+  http://127.0.0.1:8080/predict_revenue
+```
+
 Odpowiedź **nie ujawnia** użytego modelu (wybór A/B przezroczysty dla klienta).
 Endpointy pomocnicze: `GET /health`, `POST /predict_revenue/{a|b}` (wymuszenie modelu).
 
@@ -74,22 +108,31 @@ python scripts/evaluate_ab.py                          # metryki + istotność +
 ## Notatniki
 
 ```powershell
-python -m ipykernel install --user --name nocarz-py313 --display-name "Python 3.13 (nocarz)"
+python -m ipykernel install --user --name nocarz-py312 --display-name "Python 3.12 (nocarz)"
 python -m jupyter nbconvert --to notebook --execute --inplace `
-  --ExecutePreprocessor.kernel_name=nocarz-py313 notebooks/*.ipynb
+  --ExecutePreprocessor.kernel_name=nocarz-py312 notebooks/*.ipynb
 ```
 
 ## Testy
+
+PowerShell (Windows):
 
 ```powershell
 $env:PYTHONPATH = "src"; python -m pytest tests/ -q
 ```
 
+bash (Linux / macOS):
+
+```bash
+PYTHONPATH=src python -m pytest tests/ -q
+```
+
 ## Uwagi (Windows / PowerShell)
 
-- **Kernel notatników:** domyślny kernel `python3` może wskazywać inny interpreter (np. 3.12),
-  co psuje odczyt modeli zapisanych pod 3.13 (`PCG64 is not a known BitGenerator`). Rejestrujemy
-  i używamy kernela 3.13 (komenda wyżej).
+- **Spójna wersja Pythona:** cały stack (venv, obraz Docker, zapisane modele) jest na **3.12**.
+  Modele trenuj i serwuj tym samym interpreterem — mieszanie wersji minor (np. 3.12 vs 3.13)
+  psuje odczyt modeli (`PCG64 is not a known BitGenerator`). Dla notatników rejestrujemy i
+  używamy kernela 3.12 (komenda wyżej).
 - **`localhost` vs `127.0.0.1`:** klient Pythonowy (`urllib`) bywa wolny na `localhost`
   (fallback IPv6). W symulatorze domyślnie używamy `127.0.0.1`.
 - **Kodowanie:** dane są poprawnym UTF‑8 (np. „Élysée"); polskie/francuskie znaki mogą wyglądać

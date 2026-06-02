@@ -1,0 +1,15 @@
+# Keep the build context small and the image clean.
+# NOTE: data/ and models/ are deliberately NOT ignored — app.py reads
+# data/listings.csv and loads models/*.joblib at startup, so those artifacts
+# must be in the build context (or volume-mounted) for the container to start.
+.venv/
+venv/
+.git/
+.gitignore
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ipynb_checkpoints/
+*.egg-info/
+.DS_Store
+Thumbs.db
