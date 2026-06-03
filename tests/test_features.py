@@ -2,7 +2,14 @@
 
 import math
 
-from nocarz.features import count_premium_amenities, parse_bathrooms
+import numpy as np
+
+from nocarz.features import (
+    PARIS_CENTER,
+    compute_distance_features,
+    count_premium_amenities,
+    parse_bathrooms,
+)
 
 
 def test_parse_bathrooms_numeric_forms():
@@ -31,3 +38,23 @@ def test_count_premium_amenities_no_double_count():
     # Two TV variants are not premium and must not inflate the count.
     am = '["TV", "TV with standard cable", "Wifi"]'
     assert count_premium_amenities(am) == 0
+
+
+def test_distance_features_center_is_zero():
+    d = compute_distance_features(*PARIS_CENTER)
+    assert float(d["dist_center_km"]) < 1e-6
+    # Notre-Dame is a landmark co-located with Point Zéro -> nearest ~ 0.
+    assert float(d["dist_nearest_landmark_km"]) < 1e-6
+
+
+def test_distance_features_bulk_matches_pointwise():
+    """Train/serve parity: the bulk (array) path must equal the per-point path."""
+    lats = np.array([48.86, 48.88, 48.84])
+    lons = np.array([2.34, 2.30, 2.39])
+    bulk = compute_distance_features(lats, lons)
+    for i in range(len(lats)):
+        point = compute_distance_features(lats[i], lons[i])
+        assert np.isclose(bulk["dist_center_km"][i], float(point["dist_center_km"]))
+        assert np.isclose(
+            bulk["dist_nearest_landmark_km"][i], float(point["dist_nearest_landmark_km"])
+        )

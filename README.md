@@ -5,9 +5,9 @@ Projekt IUM (temat 12), zespół **The Szponters**.
 Wcielamy się w analityków portalu **Nocarz** (najem krótkoterminowy). Dział Business Development
 pyta: *„w którym miejscu szukać nowego lokalu, aby był jak najbardziej opłacalny?"*. Budujemy
 model, który na podstawie cech **znanych przed wystawieniem oferty** (lokalizacja, typ lokalu,
-otoczenie rynkowe) prognozuje **roczny przychód** lokalu (`annual_revenue`, EUR), oraz mikroserwis,
-który serwuje predykcje za przezroczystym eksperymentem **A/B** dwóch modeli i loguje dane do jego
-późniejszej oceny.
+otoczenie rynkowe) prognozuje oba wyniki z Canvas — **roczny przychód** lokalu (`annual_revenue`,
+EUR) oraz **obłożenie** (`occupancy`) — a także mikroserwis, który serwuje predykcje za
+przezroczystym eksperymentem **A/B** dwóch modeli i loguje dane do jego późniejszej oceny.
 
 Pełna metodyka i wyniki: **[`reports/raport.md`](reports/raport.md)** · raport A/B:
 **[`reports/ab_report.md`](reports/ab_report.md)** (oba po polsku).
@@ -30,12 +30,14 @@ data/            listings.csv, calendar.csv (wejście) + data/processed/ (artefa
 reports/         raport.md, ab_report.md, figures/
 ```
 
-- **Model A (bazowy):** `DistrictMeanRegressor` — średni przychód w dzielnicy (czysty lookup).
+- **Model A (bazowy):** `DistrictMeanRegressor` — średnia wartość celu w dzielnicy (czysty lookup).
 - **Model B (docelowy):** `OneHotEncoder` + `HistGradientBoostingRegressor`.
+- **Dwa cele, cztery modele:** każdy z wyników (przychód, obłożenie) ma własną parę A/B; wszystkie
+  dzielą ten sam zestaw cech. `registry.json` ma strukturę rola→cel→wersja.
 - **Routing A/B:** deterministyczny hash SHA‑256 klucza (`client_id` lub `listing_id`), 50/50,
   „lepki" i bezstanowy. Udział strojony przez `NOCARZ_AB_SPLIT`.
-- **Kontrakt:** używamy wyłącznie cech sprzed startu oferty; własna cena/oceny/obłożenie lokalu są
-  świadomie pominięte (to wyniki, nie wejścia).
+- **Kontrakt:** jako *wejścia* używamy wyłącznie cech sprzed startu oferty; własna cena/oceny są
+  świadomie pominięte (to wyniki). Obłożenie jest *celem* predykcji, nie wejściem.
 
 ## Wymagania
 
@@ -59,7 +61,7 @@ Obraz ma **cztery tryby** (pierwszy argument lub `NOCARZ_MODE`):
 | Tryb | Co robi |
 |---|---|
 | `serve` *(domyślny)* | uruchamia mikroserwis na `0.0.0.0:8080` |
-| `pipeline` | buduje tabele cech/celu i trenuje + zapisuje oba modele |
+| `pipeline` | buduje tabele cech/celu i trenuje + zapisuje cztery modele (przychód + obłożenie, A + B) |
 | `ab` | uruchamia pełny eksperyment A/B (serwer → odtworzenie ofert → ewaluacja) |
 | `test` | uruchamia testy (`pytest`) |
 
@@ -93,7 +95,8 @@ curl -X POST -H "Content-Type: application/json" \
        "neighbourhood_cleansed":"Observatoire","property_type":"Entire rental unit",
        "room_type":"Entire home/apt","accommodates":2,"amenities_count":15}}' \
   http://127.0.0.1:8080/predict_revenue
-# -> {"request_id": "...", "listing_id": 3109, "predicted_annual_revenue": 36683.32, "currency": "EUR"}
+# -> {"request_id": "...", "listing_id": 3109, "predicted_annual_revenue": 36683.32,
+#     "predicted_occupancy": 0.62, "currency": "EUR"}
 ```
 
 Pola `client_id`, `force_model` oraz `bathrooms` i `premium_amenities_count` są **opcjonalne**
