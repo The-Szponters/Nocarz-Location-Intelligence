@@ -48,10 +48,13 @@ NUMERIC_FEATURES = [
     "amenities_count",
     "bathrooms",
     "premium_amenities_count",
+    "dist_center_km",
+    "dist_nearest_landmark_km",
     "comp_count_250m",
     "comp_count_500m",
     "comp_count_1000m",
     "district_median_price",
+    "district_price_volatility",
     "district_mean_review_location",
 ]
 CATEGORICAL_FEATURES = [
@@ -61,6 +64,9 @@ CATEGORICAL_FEATURES = [
 ]
 ALL_FEATURES = NUMERIC_FEATURES + CATEGORICAL_FEATURES
 TARGET = "annual_revenue"
+# Second Canvas output (occupancy rate in [0, 1]). Predicted by a parallel pair
+# of models that share ALL_FEATURES with the revenue models.
+TARGET_OCCUPANCY = "occupancy"
 
 # Competition-density radii in metres.
 RADII_M = {"comp_count_250m": 250.0, "comp_count_500m": 500.0, "comp_count_1000m": 1000.0}
@@ -68,6 +74,20 @@ RADII_M = {"comp_count_250m": 250.0, "comp_count_500m": 500.0, "comp_count_1000m
 # Equirectangular projection constants.
 _M_PER_DEG_LAT = 110_540.0
 _M_PER_DEG_LON = 111_320.0
+
+# Key Paris reference points (Canvas: "odległość od kluczowych punktów").
+# Distance to these is a pure function of the candidate's lat/lon, so it is
+# identical offline and at serve time (no spatial-index dependency).
+PARIS_CENTER = (48.8530, 2.3499)  # Point Zéro, in front of Notre-Dame
+LANDMARKS = {
+    "eiffel_tower": (48.8584, 2.2945),
+    "louvre": (48.8606, 2.3376),
+    "arc_de_triomphe": (48.8738, 2.2950),
+    "sacre_coeur": (48.8867, 2.3431),
+    "notre_dame": (48.8530, 2.3499),
+    "gare_du_nord": (48.8809, 2.3553),
+    "opera_garnier": (48.8719, 2.3316),
+}
 
 # Fallback when no reference median is available (the modal value is "1 bath").
 _DEFAULT_BATHROOMS = 1.0
@@ -160,6 +180,31 @@ def parse_bathrooms(text) -> float:
     return np.nan
 
 
+def _km_to(lat, lon, ref_lat: float, ref_lon: float):
+    """Great-circle-ish distance (km) from point(s) to a fixed reference,
+    using the same equirectangular approximation as the spatial index."""
+    lat = np.asarray(lat, dtype=float)
+    lon = np.asarray(lon, dtype=float)
+    dx = (lon - ref_lon) * _M_PER_DEG_LON * np.cos(np.radians(ref_lat))
+    dy = (lat - ref_lat) * _M_PER_DEG_LAT
+    return np.sqrt(dx * dx + dy * dy) / 1000.0
+
+
+def compute_distance_features(lat, lon) -> dict:
+    """Distance (km) to the city centre and to the nearest key landmark.
+
+    Pure function of lat/lon (no reference index), so it is identical in the
+    bulk training path and the single-point serving path. Accepts scalars or
+    arrays; returns numpy arrays (0-d for scalar input).
+    """
+    center = _km_to(lat, lon, *PARIS_CENTER)
+    landmark_dists = np.stack(
+        [_km_to(lat, lon, la, lo) for (la, lo) in LANDMARKS.values()]
+    )
+    nearest = landmark_dists.min(axis=0)
+    return {"dist_center_km": center, "dist_nearest_landmark_km": nearest}
+
+
 # --- Feature builder -------------------------------------------------------
 class FeatureBuilder:
     """Builds spatial / neighbourhood features from the reference listings.
@@ -182,6 +227,16 @@ class FeatureBuilder:
         grp = ref.groupby("neighbourhood_cleansed")
         self.district_median_price = grp["price"].median()
         self.district_listing_count = grp.size()
+        # District price volatility: coefficient of variation of nightly price
+        # within the district (cross-sectional dispersion proxy — Canvas's
+        # `calendar_prev.csv` temporal series does not exist in the data).
+        _price_mean = grp["price"].mean()
+        self.district_price_volatility = (grp["price"].std() / _price_mean).fillna(0.0)
+        _global_price_mean = float(ref["price"].mean())
+        self.global_price_volatility = (
+            float(ref["price"].std() / _global_price_mean)
+            if _global_price_mean else 0.0
+        )
         if "review_scores_location" in ref.columns:
             self.district_mean_review_location = grp["review_scores_location"].mean()
         else:
@@ -231,6 +286,9 @@ class FeatureBuilder:
             "district_median_price": float(
                 self.district_median_price.get(district, self.global_median_price)
             ),
+            "district_price_volatility": float(
+                self.district_price_volatility.get(district, self.global_price_volatility)
+            ),
             "district_mean_review_location": float(
                 self.district_mean_review_location.get(
                     district, self.global_mean_review_location
@@ -266,6 +324,8 @@ class FeatureBuilder:
         }
         row.update(self.compute_spatial_point(f["latitude"], f["longitude"]))
         row.update(self.district_aggregates(f["neighbourhood_cleansed"]))
+        dist = compute_distance_features(f["latitude"], f["longitude"])
+        row.update({k: float(v) for k, v in dist.items()})
         return pd.DataFrame([row])[ALL_FEATURES]
 
     @classmethod

@@ -49,6 +49,8 @@ def test_predict_returns_prediction_without_model_identity(client):
     assert r.status_code == 200
     body = r.json()
     assert body["predicted_annual_revenue"] >= 0
+    # Second Canvas output: occupancy is returned and is a valid fraction.
+    assert 0.0 <= body["predicted_occupancy"] <= 1.0
     assert body["listing_id"] == 3109
     assert "request_id" in body
     # Transparency: client-facing response must NOT reveal the model.
@@ -61,6 +63,9 @@ def test_forced_endpoints_reveal_model_and_differ(client):
     assert ra["model_used"] == "a" and rb["model_used"] == "b"
     # Baseline (district mean) and HGB should give different predictions.
     assert ra["predicted_annual_revenue"] != rb["predicted_annual_revenue"]
+    # Both models also return an occupancy prediction in range.
+    assert 0.0 <= ra["predicted_occupancy"] <= 1.0
+    assert 0.0 <= rb["predicted_occupancy"] <= 1.0
 
 
 def test_invalid_payload_returns_422(client):

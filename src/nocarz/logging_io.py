@@ -15,7 +15,8 @@ from pathlib import Path
 from nocarz.features import LOGS_DIR
 
 LOG_PATH = LOGS_DIR / "predictions.jsonl"
-SCHEMA_VERSION = 1
+# v2: added predicted_occupancy + ground_truth_occupancy (second Canvas output).
+SCHEMA_VERSION = 2
 
 _LOCK = threading.Lock()
 

@@ -1,11 +1,16 @@
 """Evaluate the A/B experiment from the microservice log.
 
 Reads logs/predictions.jsonl, joins ground truth on listing_id, and compares
-model A vs B: per-model RMSE/MAE/R2, statistical significance (Mann-Whitney U
-+ Welch t-test on absolute errors; paired Wilcoxon if forced /a-/b traffic is
-present), a bootstrap CI on the RMSE gap, plots, and a verdict.
+model A vs B on BOTH Canvas outputs:
+* revenue   — the primary KPI; drives the deployment verdict (per-model
+  RMSE/MAE/R2, Mann-Whitney U + Welch on absolute errors, paired Wilcoxon on
+  forced /a-/b traffic, a bootstrap CI on the RMSE gap, plots).
+* occupancy — reported as a secondary metric table + significance + a scatter.
 
-Functions are importable by notebooks/03_ab_evaluation.ipynb.
+Functions are importable by notebooks/03_ab_evaluation.ipynb. The metric
+helpers take (pred_col, true_col, ae_col, se_col) so they serve either target;
+they default to revenue for backward compatibility.
+
 Usage:  python scripts/evaluate_ab.py
 """
 
@@ -32,6 +37,12 @@ FIG_DIR = REPORTS_DIR / "figures"
 REPORT_PATH = REPORTS_DIR / "ab_report.md"
 MODEL_LABELS = {"a": "A (baseline / district-mean)", "b": "B (HGB)"}
 
+# Per-target column wiring. Revenue is primary (drives the verdict + main plots).
+REVENUE = dict(pred="predicted_annual_revenue", true="true_annual_revenue",
+               ae="abs_err", se="sq_err")
+OCCUPANCY = dict(pred="predicted_occupancy", true="true_occupancy",
+                 ae="abs_err_occ", se="sq_err_occ")
+
 
 # --- data loading ----------------------------------------------------------
 def load_log(path: Path = LOG_PATH) -> pd.DataFrame:
@@ -42,8 +53,11 @@ def load_log(path: Path = LOG_PATH) -> pd.DataFrame:
 def join_truth(log_df: pd.DataFrame, gt_path: Path = GT_PATH) -> pd.DataFrame:
     gt = pd.read_csv(gt_path)
     df = log_df.merge(gt, on="listing_id", how="inner")
-    df["abs_err"] = (df["predicted_annual_revenue"] - df["true_annual_revenue"]).abs()
-    df["sq_err"] = (df["predicted_annual_revenue"] - df["true_annual_revenue"]) ** 2
+    df[REVENUE["ae"]] = (df[REVENUE["pred"]] - df[REVENUE["true"]]).abs()
+    df[REVENUE["se"]] = (df[REVENUE["pred"]] - df[REVENUE["true"]]) ** 2
+    if OCCUPANCY["pred"] in df.columns and OCCUPANCY["true"] in df.columns:
+        df[OCCUPANCY["ae"]] = (df[OCCUPANCY["pred"]] - df[OCCUPANCY["true"]]).abs()
+        df[OCCUPANCY["se"]] = (df[OCCUPANCY["pred"]] - df[OCCUPANCY["true"]]) ** 2
     return df
 
 
@@ -54,25 +68,25 @@ def natural_traffic(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # --- metrics ---------------------------------------------------------------
-def per_model_metrics(df: pd.DataFrame) -> pd.DataFrame:
+def per_model_metrics(df: pd.DataFrame, cols: dict = REVENUE) -> pd.DataFrame:
     rows = []
     for role, g in df.groupby("assigned_model"):
-        yt, yp = g["true_annual_revenue"], g["predicted_annual_revenue"]
+        yt, yp = g[cols["true"]], g[cols["pred"]]
         rows.append({
             "model": role,
             "n": len(g),
             "rmse": mean_squared_error(yt, yp) ** 0.5,
             "mae": mean_absolute_error(yt, yp),
             "r2": r2_score(yt, yp) if len(g) > 1 else float("nan"),
-            "median_ae": g["abs_err"].median(),
+            "median_ae": g[cols["ae"]].median(),
         })
     return pd.DataFrame(rows).sort_values("model").reset_index(drop=True)
 
 
-def significance(df: pd.DataFrame) -> dict:
+def significance(df: pd.DataFrame, cols: dict = REVENUE) -> dict:
     """Independent tests on absolute errors between the two live groups."""
-    err_a = df[df["assigned_model"] == "a"]["abs_err"].to_numpy()
-    err_b = df[df["assigned_model"] == "b"]["abs_err"].to_numpy()
+    err_a = df[df["assigned_model"] == "a"][cols["ae"]].to_numpy()
+    err_b = df[df["assigned_model"] == "b"][cols["ae"]].to_numpy()
     out = {"n_a": len(err_a), "n_b": len(err_b)}
     if len(err_a) and len(err_b):
         out["mwu_p"] = float(stats.mannwhitneyu(err_a, err_b, alternative="two-sided")[1])
@@ -82,11 +96,12 @@ def significance(df: pd.DataFrame) -> dict:
     return out
 
 
-def bootstrap_rmse_gap(df: pd.DataFrame, n_boot: int = 2000, seed: int = 0) -> tuple:
+def bootstrap_rmse_gap(df: pd.DataFrame, n_boot: int = 2000, seed: int = 0,
+                       cols: dict = REVENUE) -> tuple:
     """95% CI for RMSE(A) - RMSE(B), resampling within each group."""
     rng = np.random.default_rng(seed)
-    a = df[df["assigned_model"] == "a"]["sq_err"].to_numpy()
-    b = df[df["assigned_model"] == "b"]["sq_err"].to_numpy()
+    a = df[df["assigned_model"] == "a"][cols["se"]].to_numpy()
+    b = df[df["assigned_model"] == "b"][cols["se"]].to_numpy()
     if not len(a) or not len(b):
         return (float("nan"), float("nan"))
     gaps = np.empty(n_boot)
@@ -97,31 +112,33 @@ def bootstrap_rmse_gap(df: pd.DataFrame, n_boot: int = 2000, seed: int = 0) -> t
     return (float(np.percentile(gaps, 2.5)), float(np.percentile(gaps, 97.5)))
 
 
-def paired_test(df_all: pd.DataFrame) -> dict | None:
+def paired_test(df_all: pd.DataFrame, cols: dict = REVENUE) -> dict | None:
     """Wilcoxon on per-listing abs-error difference, using forced /a-/b logs."""
-    fa = df_all[df_all["endpoint"] == "/predict_revenue/a"][["listing_id", "abs_err"]]
-    fb = df_all[df_all["endpoint"] == "/predict_revenue/b"][["listing_id", "abs_err"]]
+    fa = df_all[df_all["endpoint"] == "/predict_revenue/a"][["listing_id", cols["ae"]]]
+    fb = df_all[df_all["endpoint"] == "/predict_revenue/b"][["listing_id", cols["ae"]]]
     if fa.empty or fb.empty:
         return None
     merged = fa.merge(fb, on="listing_id", suffixes=("_a", "_b"))
     if len(merged) < 5:
         return None
-    diff = merged["abs_err_a"] - merged["abs_err_b"]
+    col_a, col_b = f"{cols['ae']}_a", f"{cols['ae']}_b"
+    diff = merged[col_a] - merged[col_b]
     return {
         "n_pairs": len(merged),
-        "mean_ae_a": float(merged["abs_err_a"].mean()),
-        "mean_ae_b": float(merged["abs_err_b"].mean()),
+        "mean_ae_a": float(merged[col_a].mean()),
+        "mean_ae_b": float(merged[col_b].mean()),
         "wilcoxon_p": float(stats.wilcoxon(diff)[1]),
-        "paired_t_p": float(stats.ttest_rel(merged["abs_err_a"], merged["abs_err_b"])[1]),
+        "paired_t_p": float(stats.ttest_rel(merged[col_a], merged[col_b])[1]),
     }
 
 
-# --- verdict ---------------------------------------------------------------
+# --- verdict (revenue, primary KPI) ----------------------------------------
 def decide(metrics: pd.DataFrame, ci_gap: tuple, sig: dict, paired: dict | None) -> str:
-    """Weigh the full evidence. The paired test (same listings via forced /a-/b)
-    is the most powerful and is preferred when available; the independent
-    Mann-Whitney corroborates it; the bootstrap RMSE CI is reported as a caveat
-    because RMSE is dominated by the heavy error tail at this sample size."""
+    """Weigh the full evidence on the revenue KPI. The paired test (same
+    listings via forced /a-/b) is the most powerful and is preferred when
+    available; the independent Mann-Whitney corroborates it; the bootstrap
+    RMSE CI is reported as a caveat because RMSE is dominated by the heavy
+    error tail at this sample size."""
     m = metrics.set_index("model")
     if "a" not in m.index or "b" not in m.index:
         return "Niewystarczające dane (brak ruchu dla obu modeli)."
@@ -159,7 +176,7 @@ def make_plots(df: pd.DataFrame, outdir: Path = FIG_DIR) -> list[Path]:
     outdir.mkdir(parents=True, exist_ok=True)
     paths = []
 
-    # 1) predicted vs actual per model
+    # 1) predicted vs actual per model (revenue)
     fig, axes = plt.subplots(1, 2, figsize=(12, 5), sharex=True, sharey=True)
     for ax, role in zip(axes, ["a", "b"]):
         g = df[df["assigned_model"] == role]
@@ -168,11 +185,11 @@ def make_plots(df: pd.DataFrame, outdir: Path = FIG_DIR) -> list[Path]:
         ax.plot(lim, lim, "r--", lw=1)
         ax.set(xlim=lim, ylim=lim, title=MODEL_LABELS[role],
                xlabel="rzeczywisty przychód [EUR]", ylabel="predykcja [EUR]")
-    fig.suptitle("Predykcja vs rzeczywistość")
+    fig.suptitle("Predykcja vs rzeczywistość (przychód)")
     p = outdir / "ab_pred_vs_actual.png"; fig.tight_layout(); fig.savefig(p, dpi=110); plt.close(fig)
     paths.append(p)
 
-    # 2) absolute error boxplot
+    # 2) absolute error boxplot (revenue)
     fig, ax = plt.subplots(figsize=(7, 5))
     data = [df[df["assigned_model"] == r]["abs_err"] for r in ["a", "b"]]
     ax.boxplot(data, tick_labels=[MODEL_LABELS["a"], MODEL_LABELS["b"]], showfliers=False)
@@ -180,7 +197,7 @@ def make_plots(df: pd.DataFrame, outdir: Path = FIG_DIR) -> list[Path]:
     p = outdir / "ab_abs_error_box.png"; fig.tight_layout(); fig.savefig(p, dpi=110); plt.close(fig)
     paths.append(p)
 
-    # 3) RMSE / MAE bars
+    # 3) RMSE / MAE bars (revenue)
     m = per_model_metrics(df)
     fig, ax = plt.subplots(figsize=(7, 5))
     x = np.arange(len(m)); w = 0.35
@@ -190,45 +207,80 @@ def make_plots(df: pd.DataFrame, outdir: Path = FIG_DIR) -> list[Path]:
     ax.set(ylabel="EUR", title="RMSE / MAE wg modelu"); ax.legend()
     p = outdir / "ab_metric_bars.png"; fig.tight_layout(); fig.savefig(p, dpi=110); plt.close(fig)
     paths.append(p)
+
+    # 4) predicted vs actual per model (occupancy), if present
+    if OCCUPANCY["pred"] in df.columns and OCCUPANCY["true"] in df.columns:
+        fig, axes = plt.subplots(1, 2, figsize=(12, 5), sharex=True, sharey=True)
+        for ax, role in zip(axes, ["a", "b"]):
+            g = df[df["assigned_model"] == role]
+            ax.scatter(g[OCCUPANCY["true"]], g[OCCUPANCY["pred"]], s=8, alpha=0.3)
+            ax.plot([0, 1], [0, 1], "r--", lw=1)
+            ax.set(xlim=[0, 1], ylim=[0, 1], title=MODEL_LABELS[role],
+                   xlabel="rzeczywiste obłożenie", ylabel="predykcja obłożenia")
+        fig.suptitle("Predykcja vs rzeczywistość (obłożenie)")
+        p = outdir / "ab_occupancy_pred_vs_actual.png"
+        fig.tight_layout(); fig.savefig(p, dpi=110); plt.close(fig)
+        paths.append(p)
     return paths
 
 
 # --- report ----------------------------------------------------------------
-def _md_table(metrics: pd.DataFrame) -> str:
-    """Render the metrics table as Markdown without the optional tabulate dep."""
+def _md_table(metrics: pd.DataFrame, money: bool = True) -> str:
+    """Render a metrics table as Markdown without the optional tabulate dep."""
     header = "| model | n | RMSE | MAE | R² | mediana AE |"
     sep = "|---|---|---|---|---|---|"
     rows = []
     for _, r in metrics.iterrows():
+        if money:
+            rmse, mae, med = f"{r['rmse']:,.0f}", f"{r['mae']:,.0f}", f"{r['median_ae']:,.0f}"
+        else:
+            rmse, mae, med = f"{r['rmse']:.4f}", f"{r['mae']:.4f}", f"{r['median_ae']:.4f}"
         rows.append(
             f"| {MODEL_LABELS.get(r['model'], r['model'])} | {int(r['n']):,} | "
-            f"{r['rmse']:,.0f} | {r['mae']:,.0f} | {r['r2']:.3f} | {r['median_ae']:,.0f} |"
+            f"{rmse} | {mae} | {r['r2']:.3f} | {med} |"
         )
     return "\n".join([header, sep, *rows])
 
 
-def write_report(metrics, sig, ci_gap, paired, verdict_text, path: Path = REPORT_PATH):
+def write_report(metrics, sig, ci_gap, paired, verdict_text,
+                 occ_metrics=None, occ_sig=None, occ_paired=None,
+                 path: Path = REPORT_PATH):
     lines = ["# Raport z eksperymentu A/B — Nocarz\n",
              f"Źródło: `{LOG_PATH.name}` (ruch produkcyjny, routing hash 50/50).\n",
-             "## Metryki per model (ruch naturalny A/B)\n",
-             _md_table(metrics), "\n",
-             "## Istotność statystyczna (błąd bezwzględny, testy niezależne)\n",
+             "## Przychód — metryki per model (ruch naturalny A/B)\n",
+             _md_table(metrics, money=True), "\n",
+             "## Przychód — istotność statystyczna (błąd bezwzględny, testy niezależne)\n",
              f"- Mann-Whitney U: p = {sig.get('mwu_p', float('nan')):.4g}",
              f"- Welch t-test: p = {sig.get('welch_p', float('nan')):.4g}",
              f"- Bootstrap 95% CI dla RMSE(A) − RMSE(B): "
              f"[{ci_gap[0]:,.0f}, {ci_gap[1]:,.0f}] EUR\n"]
     if paired:
-        lines += ["## Test parowany (wymuszone /a i /b na tych samych ofertach)\n",
+        lines += ["## Przychód — test parowany (wymuszone /a i /b na tych samych ofertach)\n",
                   f"- liczba par: {paired['n_pairs']:,}",
                   f"- średni |błąd| A = {paired['mean_ae_a']:,.0f}, "
                   f"B = {paired['mean_ae_b']:,.0f} EUR",
                   f"- Wilcoxon: p = {paired['wilcoxon_p']:.4g}; "
                   f"t-parowany: p = {paired['paired_t_p']:.4g}\n"]
-    lines += ["## Werdykt\n", verdict_text, "\n",
-              "## Wykresy\n",
+    lines += ["## Werdykt (przychód — główne KPI)\n", verdict_text, "\n"]
+
+    if occ_metrics is not None:
+        lines += ["## Obłożenie — metryki per model (drugorzędny wynik Canvas)\n",
+                  _md_table(occ_metrics, money=False), "\n"]
+        if occ_sig:
+            lines += [f"- Mann-Whitney U (|błąd| obłożenia): "
+                      f"p = {occ_sig.get('mwu_p', float('nan')):.4g}\n"]
+        if occ_paired:
+            lines += [f"- Test parowany (Wilcoxon) obłożenia: "
+                      f"p = {occ_paired['wilcoxon_p']:.4g} "
+                      f"(śr. |błąd| A={occ_paired['mean_ae_a']:.4f}, "
+                      f"B={occ_paired['mean_ae_b']:.4f})\n"]
+
+    lines += ["## Wykresy\n",
               "![pred vs actual](figures/ab_pred_vs_actual.png)",
               "![abs error](figures/ab_abs_error_box.png)",
               "![metrics](figures/ab_metric_bars.png)"]
+    if occ_metrics is not None:
+        lines += ["![occupancy pred vs actual](figures/ab_occupancy_pred_vs_actual.png)"]
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(lines), encoding="utf-8")
 
@@ -241,20 +293,33 @@ def main() -> None:
         print("No natural A/B traffic in the log. Run simulate_clients.py first.")
         return
 
-    metrics = per_model_metrics(nat)
-    sig = significance(nat)
-    ci_gap = bootstrap_rmse_gap(nat)
-    paired = paired_test(df_all)
+    # Revenue (primary KPI).
+    metrics = per_model_metrics(nat, REVENUE)
+    sig = significance(nat, REVENUE)
+    ci_gap = bootstrap_rmse_gap(nat, cols=REVENUE)
+    paired = paired_test(df_all, REVENUE)
     verdict_text = decide(metrics, ci_gap, sig, paired)
-    make_plots(nat)
-    write_report(metrics, sig, ci_gap, paired, verdict_text)
 
-    print("=== Per-model metrics (natural A/B traffic) ===")
+    # Occupancy (secondary), if logged.
+    occ_metrics = occ_sig = occ_paired = None
+    if OCCUPANCY["true"] in nat.columns and OCCUPANCY["pred"] in nat.columns:
+        occ_metrics = per_model_metrics(nat, OCCUPANCY)
+        occ_sig = significance(nat, OCCUPANCY)
+        occ_paired = paired_test(df_all, OCCUPANCY)
+
+    make_plots(nat)
+    write_report(metrics, sig, ci_gap, paired, verdict_text,
+                 occ_metrics, occ_sig, occ_paired)
+
+    print("=== Przychód — per-model metrics (natural A/B traffic) ===")
     print(metrics.to_string(index=False))
     print(f"\nMann-Whitney p={sig.get('mwu_p'):.4g}  Welch p={sig.get('welch_p'):.4g}")
     print(f"Bootstrap 95% CI RMSE(A)-RMSE(B): [{ci_gap[0]:,.0f}, {ci_gap[1]:,.0f}]")
     if paired:
         print(f"Paired Wilcoxon p={paired['wilcoxon_p']:.4g} (n={paired['n_pairs']})")
+    if occ_metrics is not None:
+        print("\n=== Obłożenie — per-model metrics ===")
+        print(occ_metrics.to_string(index=False))
     print(f"\nVERDICT: {verdict_text}")
     print(f"\nReport -> {REPORT_PATH}")
 

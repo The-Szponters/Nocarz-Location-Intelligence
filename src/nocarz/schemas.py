@@ -48,6 +48,9 @@ class PredictionResponse(BaseModel):
     request_id: str
     listing_id: int
     predicted_annual_revenue: float
+    predicted_occupancy: float = Field(
+        ..., ge=0, le=1, description="Predicted booked-night fraction (second Canvas output)"
+    )
     currency: str = "EUR"
 
 

@@ -20,9 +20,11 @@ from nocarz.features import (  # noqa: E402
     LISTINGS_CSV,
     PROCESSED_DIR,
     TARGET,
+    TARGET_OCCUPANCY,
     FeatureBuilder,
     amenities_count,
     clean_price_series,
+    compute_distance_features,
     count_premium_amenities,
     parse_bathrooms,
 )
@@ -74,9 +76,20 @@ def main() -> None:
     comp.index = valid.index
     valid = pd.concat([valid, comp], axis=1)
 
+    # Distance to key points (pure function of lat/lon; parity with serving).
+    dist = compute_distance_features(
+        valid["latitude"].to_numpy(), valid["longitude"].to_numpy()
+    )
+    for name, values in dist.items():
+        valid[name] = values
+
     # District market aggregates.
     valid["district_median_price"] = valid["neighbourhood_cleansed"].map(
         fb.district_median_price
+    )
+    valid["district_price_volatility"] = (
+        valid["neighbourhood_cleansed"].map(fb.district_price_volatility)
+        .fillna(fb.global_price_volatility)
     )
     valid["district_mean_review_location"] = valid["neighbourhood_cleansed"].map(
         fb.district_mean_review_location
@@ -84,7 +97,7 @@ def main() -> None:
 
     # Join the target.
     print(f"Joining target from {TARGETS_PATH} ...")
-    targets = pd.read_csv(TARGETS_PATH, usecols=["id", "annual_revenue", "occupancy"])
+    targets = pd.read_csv(TARGETS_PATH, usecols=["id", TARGET, TARGET_OCCUPANCY])
     df = valid.merge(targets, on="id", how="inner")
     print(f"  {len(df):,} listings have a matching target")
 
@@ -93,7 +106,7 @@ def main() -> None:
     df = df[df[TARGET].notna()].copy()
     print(f"  dropped {before - len(df):,} rows with missing target")
 
-    out_cols = ["id"] + ALL_FEATURES + [TARGET, "occupancy"]
+    out_cols = ["id"] + ALL_FEATURES + [TARGET, TARGET_OCCUPANCY]
     df[out_cols].to_csv(OUT_PATH, index=False)
     print(f"\nWrote {len(df):,} rows x {len(out_cols)} cols -> {OUT_PATH}")
     print("\nFeature null counts:")
