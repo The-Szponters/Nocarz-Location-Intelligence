@@ -23,6 +23,8 @@ from nocarz.features import (  # noqa: E402
     FeatureBuilder,
     amenities_count,
     clean_price_series,
+    count_premium_amenities,
+    parse_bathrooms,
 )
 
 TARGETS_PATH = PROCESSED_DIR / "listing_targets.csv"
@@ -38,6 +40,7 @@ USECOLS = [
     "room_type",
     "accommodates",
     "amenities",
+    "bathrooms_text",
     "price",
     "review_scores_location",
 ]
@@ -50,6 +53,10 @@ def main() -> None:
 
     listings["price"] = clean_price_series(listings["price"])
     listings["amenities_count"] = listings["amenities"].map(amenities_count)
+    listings["premium_amenities_count"] = listings["amenities"].map(count_premium_amenities)
+    listings["bathrooms"] = listings["bathrooms_text"].map(parse_bathrooms)
+    # Impute missing bath counts with the global median (modal listing is 1 bath).
+    listings["bathrooms"] = listings["bathrooms"].fillna(listings["bathrooms"].median())
 
     # Spatial index over ALL listings; competition for each existing listing
     # excludes the listing itself.

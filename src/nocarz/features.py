@@ -20,6 +20,7 @@ Design notes
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import numpy as np
@@ -45,6 +46,8 @@ NUMERIC_FEATURES = [
     "longitude",
     "accommodates",
     "amenities_count",
+    "bathrooms",
+    "premium_amenities_count",
     "comp_count_250m",
     "comp_count_500m",
     "comp_count_1000m",
@@ -66,6 +69,36 @@ RADII_M = {"comp_count_250m": 250.0, "comp_count_500m": 500.0, "comp_count_1000m
 _M_PER_DEG_LAT = 110_540.0
 _M_PER_DEG_LON = 111_320.0
 
+# Fallback when no reference median is available (the modal value is "1 bath").
+_DEFAULT_BATHROOMS = 1.0
+
+# Premium amenities: each entry is a category whose presence signals a
+# higher-end (more rentable) listing. We count how many CATEGORIES are present
+# (substring match, case-insensitive) rather than raw amenity strings, so that
+# e.g. "TV" and "TV with standard cable" don't double-count.
+PREMIUM_AMENITY_KEYWORDS = {
+    "air_conditioning": ("air condition",),
+    "pool": ("pool",),
+    "hot_tub": ("hot tub",),
+    "elevator": ("elevator",),
+    "dishwasher": ("dishwasher",),
+    "gym": ("gym", "fitness"),
+    "free_parking": ("free parking", "free residential garage",
+                     "free driveway", "free carport"),
+    "washer": ("washer",),
+    "dryer": ("dryer",),
+    "outdoor_space": ("balcony", "patio", "terrace", "garden", "backyard"),
+    "workspace": ("dedicated workspace",),
+    "self_check_in": ("self check-in", "lockbox", "keypad", "smart lock"),
+}
+
+# Substrings that disqualify a keyword hit, to avoid false positives from
+# substring matching ("washer" in "dishwasher", "dryer" in "hair dryer").
+_PREMIUM_EXCLUDE = {
+    "washer": ("dishwasher",),
+    "dryer": ("hair dryer", "hairdryer"),
+}
+
 
 # --- Column cleaning helpers ----------------------------------------------
 def clean_price_series(s: pd.Series) -> pd.Series:
@@ -75,15 +108,56 @@ def clean_price_series(s: pd.Series) -> pd.Series:
     )
 
 
-def amenities_count(value) -> int:
-    """Count amenities in a JSON-array string like ``["Wifi", "Kitchen"]``."""
+def _parse_amenities(value) -> list:
+    """Parse a JSON-array string like ``["Wifi", "Kitchen"]`` into a list."""
     if value is None or (isinstance(value, float) and np.isnan(value)):
-        return 0
+        return []
     try:
         parsed = json.loads(value)
-        return len(parsed) if isinstance(parsed, list) else 0
+        return parsed if isinstance(parsed, list) else []
     except (json.JSONDecodeError, TypeError):
+        return []
+
+
+def amenities_count(value) -> int:
+    """Count amenities in a JSON-array string like ``["Wifi", "Kitchen"]``."""
+    return len(_parse_amenities(value))
+
+
+def count_premium_amenities(value) -> int:
+    """Count how many PREMIUM_AMENITY_KEYWORDS categories appear in ``value``.
+
+    Substring, case-insensitive; presence-per-category (not per amenity string).
+    """
+    items = [str(a).lower() for a in _parse_amenities(value)]
+    if not items:
         return 0
+    n = 0
+    for cat, keywords in PREMIUM_AMENITY_KEYWORDS.items():
+        excludes = _PREMIUM_EXCLUDE.get(cat, ())
+        present = any(
+            any(kw in a for kw in keywords) and not any(e in a for e in excludes)
+            for a in items
+        )
+        n += int(present)
+    return n
+
+
+def parse_bathrooms(text) -> float:
+    """Parse Airbnb ``bathrooms_text`` to a numeric bath count.
+
+    ``"1 bath"`` -> 1.0, ``"1.5 baths"`` -> 1.5, ``"1 shared bath"`` -> 1.0,
+    ``"Half-bath"`` / ``"Shared half-bath"`` -> 0.5, unparsable / NaN -> NaN.
+    """
+    if text is None or (isinstance(text, float) and np.isnan(text)):
+        return np.nan
+    s = str(text).strip().lower()
+    m = re.search(r"(\d+(?:\.\d+)?)", s)
+    if m:
+        return float(m.group(1))
+    if "half" in s:
+        return 0.5
+    return np.nan
 
 
 # --- Feature builder -------------------------------------------------------
@@ -118,6 +192,11 @@ class FeatureBuilder:
             if "review_scores_location" in ref.columns
             else np.nan
         )
+        # Serving default for `bathrooms` when the client omits it.
+        if "bathrooms" in ref.columns and ref["bathrooms"].notna().any():
+            self.global_median_bathrooms = float(ref["bathrooms"].median())
+        else:
+            self.global_median_bathrooms = _DEFAULT_BATHROOMS
 
     # -- projection --
     def _project(self, lat, lon) -> np.ndarray:
@@ -163,14 +242,24 @@ class FeatureBuilder:
         """Turn a request feature dict into a one-row model-input DataFrame.
 
         ``f`` must contain: latitude, longitude, neighbourhood_cleansed,
-        property_type, room_type, accommodates, amenities_count.
+        property_type, room_type, accommodates, amenities_count. The optional
+        ``bathrooms`` (-> reference median) and ``premium_amenities_count``
+        (-> 0) are imputed when absent, so a minimal request still predicts.
         Returns a DataFrame with exactly ``ALL_FEATURES`` columns.
         """
+        bathrooms = f.get("bathrooms")
+        if bathrooms is None:
+            bathrooms = self.global_median_bathrooms
+        premium = f.get("premium_amenities_count")
+        if premium is None:
+            premium = 0
         row = {
             "latitude": f["latitude"],
             "longitude": f["longitude"],
             "accommodates": f["accommodates"],
             "amenities_count": f["amenities_count"],
+            "bathrooms": float(bathrooms),
+            "premium_amenities_count": int(premium),
             "neighbourhood_cleansed": f["neighbourhood_cleansed"],
             "property_type": f["property_type"],
             "room_type": f["room_type"],
@@ -191,8 +280,10 @@ class FeatureBuilder:
                 "neighbourhood_cleansed",
                 "price",
                 "review_scores_location",
+                "bathrooms_text",
             ],
             encoding="utf-8",
         )
         ref["price"] = clean_price_series(ref["price"])
+        ref["bathrooms"] = ref["bathrooms_text"].map(parse_bathrooms)
         return cls(ref)

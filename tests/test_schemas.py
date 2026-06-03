@@ -36,3 +36,16 @@ def test_force_model_literal():
     assert req.force_model == "b"
     with pytest.raises(ValidationError):
         PredictionRequest(features=VALID, force_model="c")
+
+
+def test_optional_features_default_none():
+    """bathrooms / premium_amenities_count are optional (server imputes them)."""
+    f = ListingFeatures(**VALID)
+    assert f.bathrooms is None and f.premium_amenities_count is None
+
+
+def test_optional_features_accept_values_and_reject_negative():
+    f = ListingFeatures(**dict(VALID, bathrooms=1.5, premium_amenities_count=4))
+    assert f.bathrooms == 1.5 and f.premium_amenities_count == 4
+    with pytest.raises(ValidationError):
+        ListingFeatures(**dict(VALID, bathrooms=-1.0))

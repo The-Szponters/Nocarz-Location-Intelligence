@@ -3,6 +3,9 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt uvicorn
 COPY . .
+RUN chmod +x docker/entrypoint.sh
 ENV PYTHONPATH="/app/src"
 EXPOSE 8080
-CMD ["uvicorn", "nocarz.app:app", "--host", "0.0.0.0", "--port", "8080", "--workers", "1"]
+# One image, several modes (serve | pipeline | ab | test); see docker/entrypoint.sh.
+ENTRYPOINT ["/app/docker/entrypoint.sh"]
+CMD ["serve"]

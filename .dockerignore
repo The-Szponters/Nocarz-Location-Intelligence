@@ -1,7 +1,15 @@
 # Keep the build context small and the image clean.
-# NOTE: data/ and models/ are deliberately NOT ignored — app.py reads
-# data/listings.csv and loads models/*.joblib at startup, so those artifacts
-# must be in the build context (or volume-mounted) for the container to start.
+#
+# data/ (raw listings.csv + the 1.4 GB calendar.csv + data/processed/) and logs/
+# are large and/or runtime artifacts — they are NOT baked into the image; mount
+# them at run time (-v "$PWD/data:/app/data"). app.py reads data/listings.csv at
+# startup, so a data volume is required for `serve`/`ab`/`test`.
+#
+# models/ (small, ~1.5 MB) IS baked in so `serve` works out of the box; mount a
+# models volume only when you want `pipeline` to persist freshly trained models.
+data/
+logs/
+
 .venv/
 venv/
 .git/
