@@ -1,96 +1,132 @@
-# Nocarz — modele opłacalności lokalizacji + mikroserwis z A/B
+# Nocarz — modele opłacalności lokalizacji + mikroserwis A/B
 
-Projekt IUM (temat 12). Przewidujemy **roczny przychód** lokalu na podstawie cech znanych
-przed wystawieniem oferty, aby wskazać działowi Business Development najbardziej opłacalne
-lokalizacje („białe plamy"). Całość: dwa modele + raport, mikroserwis serwujący predykcje
-z przezroczystym wyborem modelu i eksperymentem A/B, oraz ewaluacja A/B z loga.
+Projekt IUM (temat 12), zespół **The Szponters**.
 
-Pełny opis metodyki i wyników: **`reports/raport.md`**.
+Wcielamy się w analityków portalu **Nocarz** (najem krótkoterminowy). Dział Business Development
+pyta: *„w którym miejscu szukać nowego lokalu, aby był jak najbardziej opłacalny?"*. Budujemy
+model, który na podstawie cech **znanych przed wystawieniem oferty** (lokalizacja, typ lokalu,
+otoczenie rynkowe) prognozuje **roczny przychód** lokalu (`annual_revenue`, EUR), oraz mikroserwis,
+który serwuje predykcje za przezroczystym eksperymentem **A/B** dwóch modeli i loguje dane do jego
+późniejszej oceny.
 
-## Struktura
+Pełna metodyka i wyniki: **[`reports/raport.md`](reports/raport.md)** · raport A/B:
+**[`reports/ab_report.md`](reports/ab_report.md)** (oba po polsku).
+
+## Architektura
+
+Dwie połowy systemu współdzielą **jeden moduł cech** (`src/nocarz/features.py`), co gwarantuje
+**zgodność trening/serwowanie** (brak train/serve skew): ten sam `FeatureBuilder`, zbudowany z tego
+samego `listings.csv`, liczy cechy zarówno offline (trening), jak i przy każdym żądaniu.
 
 ```
-src/nocarz/      kod współdzielony (cechy, schematy, routing, logowanie, rejestr, FastAPI)
-scripts/         potok offline + serwer + symulacja + ewaluacja
-notebooks/       01_eda · 02_modeling (mapa „białych plam") · 03_ab_evaluation  (po polsku)
-models/          zapisane modele + registry.json
-data/processed/  tabele pośrednie (cel, cechy, zbiór testowy, ground truth)
+src/nocarz/      kod współdzielony: features (kontrakt modelu), schematy, routing A/B,
+                 logowanie, rejestr modeli, aplikacja FastAPI
+scripts/         potok offline (build_targets → build_features → train_models →
+                 make_ground_truth) + symulator klientów + ewaluacja A/B
+docker/          entrypoint.sh — jeden obraz, tryby: serve | pipeline | ab | test
+notebooks/       01_eda · 02_modeling (mapa „białych plam") · 03_ab_evaluation
+models/          zapisane modele + registry.json (rejestr wdrożonych wersji)
+data/            listings.csv, calendar.csv (wejście) + data/processed/ (artefakty)
 reports/         raport.md, ab_report.md, figures/
-tests/           testy (pytest)
 ```
+
+- **Model A (bazowy):** `DistrictMeanRegressor` — średni przychód w dzielnicy (czysty lookup).
+- **Model B (docelowy):** `OneHotEncoder` + `HistGradientBoostingRegressor`.
+- **Routing A/B:** deterministyczny hash SHA‑256 klucza (`client_id` lub `listing_id`), 50/50,
+  „lepki" i bezstanowy. Udział strojony przez `NOCARZ_AB_SPLIT`.
+- **Kontrakt:** używamy wyłącznie cech sprzed startu oferty; własna cena/oceny/obłożenie lokalu są
+  świadomie pominięte (to wyniki, nie wejścia).
 
 ## Wymagania
 
-Python **3.13** (modele serializowane pod 3.13 — patrz Uwagi). Instalacja zależności:
+- **Docker** (obraz oparty na `python:3.12-slim`).
+- Dane wejściowe w `data/`: **`listings.csv`** i **`calendar.csv`** (Inside-Airbnb‑like, Paryż).
+  Są duże i nie są wersjonowane — montujemy je jako wolumen, nie wbudowujemy w obraz.
 
-```powershell
-python -m pip install -r requirements.txt
+Spójne środowisko 3.12 daje powtarzalne, identyczne wyniki i eliminuje problem deserializacji
+modeli między wersjami Pythona (`PCG64 is not a known BitGenerator`).
+
+## Szybki start (Docker)
+
+Zbuduj obraz raz:
+
+```bash
+docker build -t nocarz .
 ```
 
-Jedyny pakiet wymagający doinstalowania ponad standardowe środowisko to `uvicorn`.
+Obraz ma **cztery tryby** (pierwszy argument lub `NOCARZ_MODE`):
 
-## Potok danych i modeli (kolejność)
+| Tryb | Co robi |
+|---|---|
+| `serve` *(domyślny)* | uruchamia mikroserwis na `0.0.0.0:8080` |
+| `pipeline` | buduje tabele cech/celu i trenuje + zapisuje oba modele |
+| `ab` | uruchamia pełny eksperyment A/B (serwer → odtworzenie ofert → ewaluacja) |
+| `test` | uruchamia testy (`pytest`) |
 
-```powershell
-python scripts/build_targets.py      # calendar.csv (33 mln) -> cel (przychód), strumieniowo
-python scripts/build_features.py     # listings + cechy przestrzenne -> model_table.csv
-python scripts/train_models.py       # baseline + HGB, CV przestrzenna (LODO), zapis modeli + test_set
-python scripts/make_ground_truth.py  # ground_truth.csv (id -> prawdziwy przychód, zbiór testowy)
+```bash
+# 1) Potok offline: cel → cechy → trening → ground truth.
+#    (krok calendar→cel ~33 mln wierszy jest pomijany, jeśli artefakt istnieje;
+#     wymuszenie pełnego przeliczenia: -e NOCARZ_FORCE=1)
+docker run --rm -v "$PWD/data:/app/data" -v "$PWD/models:/app/models" nocarz pipeline
+
+# 2) Mikroserwis (http://127.0.0.1:8080)
+docker run --rm -p 8080:8080 -v "$PWD/data:/app/data" -v "$PWD/models:/app/models" nocarz
+
+# 3) Eksperyment A/B (sam startuje serwer w tle, odtwarza oferty, liczy metryki)
+docker run --rm -v "$PWD:/app" -e NOCARZ_AB_N=1000 nocarz ab
+
+# 4) Testy
+docker run --rm -v "$PWD/data:/app/data" nocarz test
 ```
 
-## Mikroserwis
+Wolumeny: `data/` montujemy zawsze (serwis czyta `listings.csv` i pliki w `data/processed/`).
+`models/` montujemy, gdy chcemy, by `pipeline` zapisał świeże modele na hoście; do samego `serve`
+nie jest wymagany (modele są wbudowane w obraz). Tryb `ab` zapisuje raport, więc montujemy całe repo.
 
-```powershell
-.\scripts\run_server.ps1             # uvicorn na http://127.0.0.1:8080
+## Użycie API
+
+Odpowiedź **nie ujawnia**, który model odpowiedział — wybór A/B jest przezroczysty dla klienta.
+
+```bash
+curl -X POST -H "Content-Type: application/json" \
+  -d '{"features":{"listing_id":3109,"latitude":48.8319,"longitude":2.3187,
+       "neighbourhood_cleansed":"Observatoire","property_type":"Entire rental unit",
+       "room_type":"Entire home/apt","accommodates":2,"amenities_count":15}}' \
+  http://127.0.0.1:8080/predict_revenue
+# -> {"request_id": "...", "listing_id": 3109, "predicted_annual_revenue": 36683.32, "currency": "EUR"}
 ```
 
-Przykładowe wywołanie (zgodne z poleceniem). W PowerShell `curl` to alias `Invoke-WebRequest`,
-dlatego używamy **`curl.exe`** albo formy natywnej:
+Pola `client_id`, `force_model` oraz `bathrooms` i `premium_amenities_count` są **opcjonalne**
+(brakujące cechy lokalu są imputowane medianą/zerem), więc minimalny payload zawiera tylko
+`features` z podstawowymi atrybutami.
 
-```powershell
-# curl.exe (dosłownie jak w poleceniu)
-curl.exe -X POST -H "Content-Type: application/json" `
-  -d '{\"features\":{\"listing_id\":3109,\"latitude\":48.8319,\"longitude\":2.3187,\"neighbourhood_cleansed\":\"Observatoire\",\"property_type\":\"Entire rental unit\",\"room_type\":\"Entire home/apt\",\"accommodates\":2,\"amenities_count\":15}}' `
-  http://localhost:8080/predict_revenue
+Pozostałe endpointy:
+- `GET /health` — żywotność + wersje załadowanych modeli.
+- `POST /predict_revenue/{a|b}` — wymuszenie modelu (ujawnia jego tożsamość); używane przez testy
+  i parowaną analizę A/B.
 
-# forma natywna PowerShell (bez problemów z cudzysłowami)
-$body = @{ features = @{ listing_id=3109; latitude=48.8319; longitude=2.3187;
-  neighbourhood_cleansed="Observatoire"; property_type="Entire rental unit";
-  room_type="Entire home/apt"; accommodates=2; amenities_count=15 } } | ConvertTo-Json -Depth 5
-Invoke-RestMethod -Uri http://127.0.0.1:8080/predict_revenue -Method Post `
-  -ContentType "application/json" -Body $body
-```
-
-Odpowiedź **nie ujawnia** użytego modelu (wybór A/B przezroczysty dla klienta).
-Endpointy pomocnicze: `GET /health`, `POST /predict_revenue/{a|b}` (wymuszenie modelu).
+Każde żądanie jest logowane (`logs/predictions.jsonl`): przypisany model i jego wersja, cechy
+wejściowe i pochodne, predykcja oraz latencja — to wejście dla ewaluacji A/B.
 
 ## Eksperyment A/B
 
-```powershell
-python scripts/simulate_clients.py --n 1000 --paired   # odtworzenie ofert testowych -> log
-python scripts/evaluate_ab.py                          # metryki + istotność + werdykt -> reports/ab_report.md
-```
+Tryb `ab` (wyżej) wykonuje całość. Pod spodem: `simulate_clients.py` odtwarza wydzielone oferty
+testowe (nieużyte w treningu) przez serwis, a `evaluate_ab.py` łączy log z `ground_truth.csv`
+i raportuje metryki per model, istotność statystyczną (Mann‑Whitney/Welch na ruchu niezależnym,
+**parowany Wilcoxon** na wymuszonych `/a`–`/b` — najmocniejszy sygnał) oraz werdykt
+do `reports/ab_report.md`.
 
-## Notatniki
+## Notatniki i raport
 
-```powershell
-python -m ipykernel install --user --name nocarz-py313 --display-name "Python 3.13 (nocarz)"
-python -m jupyter nbconvert --to notebook --execute --inplace `
-  --ExecutePreprocessor.kernel_name=nocarz-py313 notebooks/*.ipynb
-```
+`notebooks/01_eda`, `02_modeling` (mapa potencjału + „białe plamy"), `03_ab_evaluation` to wykonane
+artefakty raportowe (po polsku). Logika `02`/`03` współdzieli funkcje z `scripts/`. Dla edycji
+notatników w Jupyterze użyj środowiska Python 3.12.
 
-## Testy
+## Uwagi
 
-```powershell
-$env:PYTHONPATH = "src"; python -m pytest tests/ -q
-```
-
-## Uwagi (Windows / PowerShell)
-
-- **Kernel notatników:** domyślny kernel `python3` może wskazywać inny interpreter (np. 3.12),
-  co psuje odczyt modeli zapisanych pod 3.13 (`PCG64 is not a known BitGenerator`). Rejestrujemy
-  i używamy kernela 3.13 (komenda wyżej).
-- **`localhost` vs `127.0.0.1`:** klient Pythonowy (`urllib`) bywa wolny na `localhost`
-  (fallback IPv6). W symulatorze domyślnie używamy `127.0.0.1`.
-- **Kodowanie:** dane są poprawnym UTF‑8 (np. „Élysée"); polskie/francuskie znaki mogą wyglądać
-  na zniekształcone tylko w konsoli cp1252 — w plikach są poprawne.
+- **Spójna wersja Pythona:** cały stack (obraz Docker, zapisane modele) jest na **3.12**.
+- **`127.0.0.1` zamiast `localhost`:** symulator używa `127.0.0.1`, by uniknąć wolnego fallbacku IPv6.
+- **Kodowanie:** dane są w UTF‑8 (np. „Élysée"); polskie/francuskie znaki bywają zniekształcone
+  jedynie w konsoli cp1252 — w plikach są poprawne.
+- **Praca bez Dockera (dev):** scenariusze deweloperskie da się uruchomić lokalnie pod Pythonem 3.12
+  (`PYTHONPATH=src`), ale wspieraną i powtarzalną ścieżką uruchomienia jest Docker (powyżej).

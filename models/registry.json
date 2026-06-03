@@ -1,15 +1,15 @@
 {
   "a": {
     "path": "models/model_a_baseline.joblib",
-    "version": "baseline-district-mean-2026.06.01",
+    "version": "baseline-district-mean-2026.06.03",
     "type": "DistrictMeanRegressor"
   },
   "b": {
     "path": "models/model_b_hgb.joblib",
-    "version": "hgb-2026.06.01",
+    "version": "hgb-2026.06.03",
     "type": "HistGradientBoostingRegressor"
   },
   "target": "annual_revenue",
   "revenue_cap": 437671.4999999968,
-  "trained_at": "2026-06-01T19:35:08"
+  "trained_at": "2026-06-03T00:18:46"
 }

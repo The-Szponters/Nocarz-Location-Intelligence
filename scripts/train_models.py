@@ -51,6 +51,15 @@ def make_baseline() -> DistrictMeanRegressor:
 
 
 def make_advanced() -> Pipeline:
+    """Model B: OneHot + HistGradientBoostingRegressor on raw-EUR revenue.
+
+    Note on the target scale: we tried a log1p/expm1 target transform (natural
+    for the heavy right skew). It *lowered* MAE slightly but **hurt RMSE and R²**
+    (LODO R² went negative): a log-model underpredicts the high-revenue
+    listings, and raw-scale squared error — which is exactly the Canvas success
+    metric — is dominated by those. We therefore keep the raw-EUR target. See
+    reports/raport.md §5.
+    """
     pre = ColumnTransformer(
         transformers=[
             ("cat", OneHotEncoder(handle_unknown="ignore", sparse_output=False),
@@ -60,10 +69,13 @@ def make_advanced() -> Pipeline:
     )
     model = HistGradientBoostingRegressor(
         learning_rate=0.05,
-        max_iter=500,
+        max_iter=600,
         max_leaf_nodes=63,
-        min_samples_leaf=50,
+        min_samples_leaf=40,
         l2_regularization=1.0,
+        early_stopping=True,
+        validation_fraction=0.1,
+        n_iter_no_change=30,
         random_state=RANDOM_STATE,
     )
     return Pipeline([("pre", pre), ("model", model)])
@@ -148,7 +160,8 @@ def main() -> None:
 
     # Held-out test set = A/B replay payloads + ground truth.
     req_cols = ["id", "latitude", "longitude", "neighbourhood_cleansed",
-                "property_type", "room_type", "accommodates", "amenities_count"]
+                "property_type", "room_type", "accommodates", "amenities_count",
+                "bathrooms", "premium_amenities_count"]
     test_out = test_df[req_cols + [TARGET]].rename(
         columns={"id": "listing_id", TARGET: "true_annual_revenue"}
     )

@@ -28,7 +28,8 @@ from nocarz.features import PROCESSED_DIR  # noqa: E402
 
 TEST_SET = PROCESSED_DIR / "test_set.csv"
 REQ_FIELDS = ["listing_id", "latitude", "longitude", "neighbourhood_cleansed",
-              "property_type", "room_type", "accommodates", "amenities_count"]
+              "property_type", "room_type", "accommodates", "amenities_count",
+              "bathrooms", "premium_amenities_count"]
 
 
 def post(url: str, payload: dict, timeout: float = 10.0) -> tuple[int, dict | None]:
@@ -69,7 +70,9 @@ def main() -> None:
         f["listing_id"] = int(f["listing_id"])
         f["accommodates"] = int(f["accommodates"])
         f["amenities_count"] = int(f["amenities_count"])
+        f["premium_amenities_count"] = int(f["premium_amenities_count"])
         f["latitude"] = float(f["latitude"]); f["longitude"] = float(f["longitude"])
+        f["bathrooms"] = float(f["bathrooms"])
 
         status, body = post(main_url, payload)
         if status == 200:

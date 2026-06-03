@@ -73,3 +73,24 @@ def test_unknown_district_does_not_crash(client):
     payload = {"features": dict(PAYLOAD["features"], neighbourhood_cleansed="Nowhere")}
     r = client.post("/predict_revenue", json=payload)
     assert r.status_code == 200
+
+
+def test_minimal_payload_without_optional_features(client):
+    """Backward compat: a request omitting bathrooms / premium_amenities_count
+    (the original teacher's payload) still validates and predicts."""
+    minimal = {"features": {k: PAYLOAD["features"][k] for k in (
+        "listing_id", "latitude", "longitude", "neighbourhood_cleansed",
+        "property_type", "room_type", "accommodates", "amenities_count")}}
+    assert "bathrooms" not in minimal["features"]
+    r = client.post("/predict_revenue", json=minimal)
+    assert r.status_code == 200
+    assert r.json()["predicted_annual_revenue"] >= 0
+
+
+def test_optional_features_change_prediction(client):
+    """Supplying bathrooms + premium amenities is accepted and is used by the model."""
+    base = dict(PAYLOAD["features"])
+    rich = dict(base, bathrooms=3.0, premium_amenities_count=8)
+    pb = client.post("/predict_revenue/b", json={"features": base}).json()
+    pr = client.post("/predict_revenue/b", json={"features": rich}).json()
+    assert pb["predicted_annual_revenue"] != pr["predicted_annual_revenue"]

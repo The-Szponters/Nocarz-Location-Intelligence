@@ -1,0 +1,23 @@
+# Keep the build context small and the image clean.
+#
+# data/ (raw listings.csv + the 1.4 GB calendar.csv + data/processed/) and logs/
+# are large and/or runtime artifacts — they are NOT baked into the image; mount
+# them at run time (-v "$PWD/data:/app/data"). app.py reads data/listings.csv at
+# startup, so a data volume is required for `serve`/`ab`/`test`.
+#
+# models/ (small, ~1.5 MB) IS baked in so `serve` works out of the box; mount a
+# models volume only when you want `pipeline` to persist freshly trained models.
+data/
+logs/
+
+.venv/
+venv/
+.git/
+.gitignore
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ipynb_checkpoints/
+*.egg-info/
+.DS_Store
+Thumbs.db

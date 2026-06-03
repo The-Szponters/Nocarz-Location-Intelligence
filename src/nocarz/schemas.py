@@ -23,6 +23,12 @@ class ListingFeatures(BaseModel):
     room_type: str
     accommodates: int = Field(..., ge=1)
     amenities_count: int = Field(..., ge=0)
+    bathrooms: Optional[float] = Field(
+        None, ge=0, description="Planned bath count; server imputes the city median if omitted"
+    )
+    premium_amenities_count: Optional[int] = Field(
+        None, ge=0, description="Count of premium amenity categories; defaults to 0 if omitted"
+    )
 
 
 class PredictionRequest(BaseModel):
