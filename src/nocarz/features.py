@@ -164,7 +164,7 @@ def count_premium_amenities(value) -> int:
 
 
 def parse_bathrooms(text) -> float:
-    """Parse Airbnb ``bathrooms_text`` to a numeric bath count.
+    """Parse ``bathrooms_text`` to a numeric bath count.
 
     ``"1 bath"`` -> 1.0, ``"1.5 baths"`` -> 1.5, ``"1 shared bath"`` -> 1.0,
     ``"Half-bath"`` / ``"Shared half-bath"`` -> 0.5, unparsable / NaN -> NaN.

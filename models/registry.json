@@ -2,24 +2,24 @@
   "a": {
     "revenue": {
       "path": "models/model_a_revenue.joblib",
-      "version": "DistrictMeanRegressor-revenue-2026.06.03",
+      "version": "DistrictMeanRegressor-revenue-2026.06.06",
       "type": "DistrictMeanRegressor"
     },
     "occupancy": {
       "path": "models/model_a_occupancy.joblib",
-      "version": "DistrictMeanRegressor-occupancy-2026.06.03",
+      "version": "DistrictMeanRegressor-occupancy-2026.06.06",
       "type": "DistrictMeanRegressor"
     }
   },
   "b": {
     "revenue": {
       "path": "models/model_b_revenue.joblib",
-      "version": "HistGradientBoostingRegressor-revenue-2026.06.03",
+      "version": "HistGradientBoostingRegressor-revenue-2026.06.06",
       "type": "HistGradientBoostingRegressor"
     },
     "occupancy": {
       "path": "models/model_b_occupancy.joblib",
-      "version": "HistGradientBoostingRegressor-occupancy-2026.06.03",
+      "version": "HistGradientBoostingRegressor-occupancy-2026.06.06",
       "type": "HistGradientBoostingRegressor"
     }
   },
@@ -28,5 +28,5 @@
     "occupancy": "occupancy"
   },
   "revenue_cap": 437671.4999999968,
-  "trained_at": "2026-06-03T13:23:57"
+  "trained_at": "2026-06-06T12:15:25"
 }

@@ -9,8 +9,8 @@ otoczenie rynkowe) prognozuje oba wyniki z Canvas — **roczny przychód** lokal
 EUR) oraz **obłożenie** (`occupancy`) — a także mikroserwis, który serwuje predykcje za
 przezroczystym eksperymentem **A/B** dwóch modeli i loguje dane do jego późniejszej oceny.
 
-Pełna metodyka i wyniki: **[`reports/raport.md`](reports/raport.md)** · raport A/B:
-**[`reports/ab_report.md`](reports/ab_report.md)** (oba po polsku).
+Pełna metodyka i wyniki: **[`reports/raport.md`](reports/raport.md)** - raport A/B:
+**[`reports/ab_report.md`](reports/ab_report.md)**.
 
 ## Architektura
 
@@ -24,7 +24,7 @@ src/nocarz/      kod współdzielony: features (kontrakt modelu), schematy, rout
 scripts/         potok offline (build_targets → build_features → train_models →
                  make_ground_truth) + symulator klientów + ewaluacja A/B
 docker/          entrypoint.sh — jeden obraz, tryby: serve | pipeline | ab | test
-notebooks/       01_eda · 02_modeling (mapa „białych plam") · 03_ab_evaluation
+notebooks/       01_eda - 02_modeling (mapa „białych plam") - 03_ab_evaluation
 models/          zapisane modele + registry.json (rejestr wdrożonych wersji)
 data/            listings.csv, calendar.csv (wejście) + data/processed/ (artefakty)
 reports/         raport.md, ab_report.md, figures/
@@ -42,7 +42,7 @@ reports/         raport.md, ab_report.md, figures/
 ## Wymagania
 
 - **Docker** (obraz oparty na `python:3.12-slim`).
-- Dane wejściowe w `data/`: **`listings.csv`** i **`calendar.csv`** (Inside-Airbnb‑like, Paryż).
+- Dane wejściowe w `data/`: **`listings.csv`** i **`calendar.csv`**.
   Są duże i nie są wersjonowane — montujemy je jako wolumen, nie wbudowujemy w obraz.
 
 Spójne środowisko 3.12 daje powtarzalne, identyczne wyniki i eliminuje problem deserializacji
